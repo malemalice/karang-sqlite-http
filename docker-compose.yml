@@ -12,6 +12,9 @@ services:
     environment:
       - SQLITE_DB_PATH=/data/sakila.db
       - PORT=8000
+      - QUERY_TIMEOUT=300
+      - BATCH_SIZE=10000
+      - LOG_QUERY_TIMING=true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

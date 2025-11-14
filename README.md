@@ -5,8 +5,14 @@ A lightweight REST API service that exposes SQLite databases via HTTP endpoints,
 ## Features
 
 - Query SQLite databases via HTTP POST requests
-- Returns results in CSV format
+- Returns results in **CSV or JSON format** (streaming for large result sets)
 - Supports custom CSV delimiters
+- **Performance optimized for large databases (3GB+)**:
+  - Streaming response (no memory overload)
+  - Batch processing for efficient memory usage
+  - SQLite WAL mode and cache optimizations
+  - Query timeout protection
+  - Progress logging and performance metrics
 - Containerized with Docker and Docker Compose
 - Read-only operations (SELECT queries only)
 
@@ -58,17 +64,38 @@ docker-compose restart
 curl http://localhost:8000/health
 ```
 
-5. **Query the database:**
+5. **Query the database (CSV format - default):**
 ```bash
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT * FROM actor LIMIT 5"}'
+  -d '{"sql": "SELECT * FROM actor LIMIT 5", "format": "csv"}'
 ```
 
-6. **View logs:**
+   **Or query as JSON:**
 ```bash
-docker-compose logs -f
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM actor LIMIT 5", "format": "json"}'
 ```
+
+6. **View logs (with performance debugging):**
+```bash
+# View all logs
+docker-compose logs -f
+
+# View only recent logs with timestamps
+docker-compose logs -f --tail=100
+
+# Follow logs in real-time (great for monitoring query performance)
+docker-compose logs -f sqllite-http-csv
+```
+
+   The logs will show detailed performance information:
+   - Query execution times
+   - Connection times
+   - Progress updates every 5 seconds for long-running queries
+   - Rows processed per second
+   - Memory usage indicators
 
 7. **Stop the service:**
 ```bash
@@ -165,25 +192,34 @@ curl http://localhost:8000/health
 ```
 
 ### POST `/query`
-Execute a SQL SELECT query and return results as CSV.
+Execute a SQL SELECT query and return results as CSV or JSON.
 
 **Request Body (JSON):**
 ```json
 {
   "sql": "SELECT * FROM table_name WHERE condition",
-  "delimiter": ","
+  "delimiter": ",",
+  "format": "csv"
 }
 ```
 
 **Parameters:**
 - `sql` (required): SQL SELECT query to execute
-- `delimiter` (optional): CSV delimiter character (default: `,`)
+- `delimiter` (optional): CSV delimiter character (default: `,`) - only used for CSV format
+- `format` (optional): Response format - `"csv"` or `"json"` (default: `"csv"`)
 
-**Example 1: List all available tables**
+**Example 1: List all available tables (CSV)**
 ```bash
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT name FROM sqlite_master WHERE type=\"table\" ORDER BY name"}'
+  -d '{"sql": "SELECT name FROM sqlite_master WHERE type=\"table\" ORDER BY name", "format": "csv"}'
+```
+
+**Example 1b: List all available tables (JSON)**
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT name FROM sqlite_master WHERE type=\"table\" ORDER BY name", "format": "json"}'
 ```
 
 **Example 2: List tables with schema information**
@@ -235,7 +271,25 @@ curl -X POST http://localhost:8000/query \
   }'
 ```
 
-**Example 8: Query with tab delimiter**
+**Example 8: Complex JOIN with date range filter**
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql": "SELECT a.first_name, a.last_name, f.title, f.release_year FROM actor a INNER JOIN film_actor fa ON a.actor_id = fa.actor_id INNER JOIN film f ON fa.film_id = f.film_id WHERE f.release_year BETWEEN 2005 AND 2006 ORDER BY f.release_year, a.last_name"
+  }'
+```
+
+**Example 9: Complex query with multiple JOINs and date WHERE clause**
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql": "SELECT c.first_name, c.last_name, r.rental_date, f.title, p.amount FROM customer c INNER JOIN rental r ON c.customer_id = r.customer_id INNER JOIN inventory i ON r.inventory_id = i.inventory_id INNER JOIN film f ON i.film_id = f.film_id INNER JOIN payment p ON r.rental_id = p.rental_id WHERE DATE(r.rental_date) >= \"2005-05-24\" AND DATE(r.rental_date) <= \"2005-06-30\" ORDER BY r.rental_date DESC"
+  }'
+```
+
+**Example 10: Query with tab delimiter**
 ```bash
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
@@ -245,21 +299,38 @@ curl -X POST http://localhost:8000/query \
   }'
 ```
 
-**Example using Python requests:**
+**Example using Python requests (CSV):**
 ```python
 import requests
 
 url = "http://localhost:8000/query"
 payload = {
     "sql": "SELECT * FROM actor WHERE first_name = 'PENELOPE'",
-    "delimiter": ","
+    "delimiter": ",",
+    "format": "csv"
 }
 
 response = requests.post(url, json=payload)
 print(response.text)  # CSV output
 ```
 
-**Example using JavaScript (fetch):**
+**Example using Python requests (JSON):**
+```python
+import requests
+import json
+
+url = "http://localhost:8000/query"
+payload = {
+    "sql": "SELECT * FROM actor WHERE first_name = 'PENELOPE'",
+    "format": "json"
+}
+
+response = requests.post(url, json=payload)
+data = response.json()  # Parse JSON response
+print(json.dumps(data, indent=2))  # Pretty print JSON
+```
+
+**Example using JavaScript (fetch - CSV):**
 ```javascript
 fetch('http://localhost:8000/query', {
   method: 'POST',
@@ -268,11 +339,28 @@ fetch('http://localhost:8000/query', {
   },
   body: JSON.stringify({
     sql: 'SELECT * FROM actor LIMIT 10',
-    delimiter: ','
+    delimiter: ',',
+    format: 'csv'
   })
 })
 .then(response => response.text())
 .then(csv => console.log(csv));
+```
+
+**Example using JavaScript (fetch - JSON):**
+```javascript
+fetch('http://localhost:8000/query', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    sql: 'SELECT * FROM actor LIMIT 10',
+    format: 'json'
+  })
+})
+.then(response => response.json())
+.then(data => console.log(data));
 ```
 
 ## Configuration
@@ -281,6 +369,9 @@ fetch('http://localhost:8000/query', {
 
 - `SQLITE_DB_PATH`: Path to SQLite database file (default: `/data/database.db`)
 - `PORT`: HTTP server port (default: `8000`)
+- `QUERY_TIMEOUT`: Query execution timeout in seconds (default: `300` = 5 minutes)
+- `BATCH_SIZE`: Number of rows to process per batch for streaming (default: `10000`)
+- `LOG_QUERY_TIMING`: Enable detailed query timing logs (default: `true`)
 
 ### Docker Compose Configuration
 
@@ -300,19 +391,56 @@ Edit `docker-compose.yml` to customize:
 
 The API returns appropriate HTTP status codes:
 
-- `200 OK`: Successful query execution
+- `200 OK`: Successful query execution (streaming CSV response)
 - `400 Bad Request`: Invalid SQL query (non-SELECT) or SQLite error
 - `404 Not Found`: Database file not found
+- `408 Request Timeout`: Query execution exceeded timeout limit (default: 5 minutes)
 - `500 Internal Server Error`: Unexpected server error
 - `503 Service Unavailable`: Database connection failure
+
+**Response Headers:**
+- `X-Query-Time`: Query execution time in seconds
+- `X-Total-Time`: Total request processing time in seconds
+- `X-Format`: Response format used (`csv` or `json`)
+
+## Performance Optimizations
+
+For large databases (3GB+), the service includes several performance optimizations:
+
+### Streaming Response
+- Results are streamed to the client instead of loading everything into memory
+- Processes rows in batches (configurable via `BATCH_SIZE`)
+- Reduces memory usage and enables faster response start time
+
+### SQLite Optimizations
+- **WAL Mode**: Write-Ahead Logging for better concurrency
+- **Cache Size**: 64MB cache for faster reads
+- **Memory-Mapped I/O**: 256MB for efficient large file access
+- **Temporary Storage**: Uses memory for temporary tables
+- **Query Timeout**: Prevents runaway queries (default: 5 minutes)
+
+### Logging and Monitoring
+- Detailed timing information for each query phase
+- Progress logging every 5 seconds for long-running queries
+- Performance metrics in response headers (`X-Query-Time`, `X-Total-Time`)
+- Logs rows/second processing rate
+
+**Example log output:**
+```
+2024-01-01 10:00:00 - INFO - Query received: SELECT * FROM large_table WHERE ...
+2024-01-01 10:00:00 - INFO - Connection time: 0.125s
+2024-01-01 10:00:05 - INFO - Query execution time: 4.876s
+2024-01-01 10:00:10 - INFO - Progress: 50,000 rows processed | Batch 5 (10,000 rows) in 0.234s | Rate: 42,735 rows/sec
+```
 
 ## Limitations
 
 - Read-only operations (SELECT queries only)
-- Single database connection at a time
+- Single database connection per request
 - No authentication/authorization (should be added for production)
 - No query result caching
 - No rate limiting (should be added for production)
+- Query timeout only works on Unix systems (not Windows)
 
 ## Development
 
